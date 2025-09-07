@@ -1,0 +1,134 @@
+
+
+services:
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: rabbitmq
+    restart: always
+    ports:
+      - "5673:5672"
+      - "15673:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: daniyal
+      RABBITMQ_DEFAULT_PASS: 123
+      RABBITMQ_DEFAULT_VHOST: chat_app
+    networks:
+      chatgpt:
+        aliases:
+          - 'rabbitmq'
+    volumes:
+      - ./volumes/rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 10s  
+
+  celery-worker:
+    restart: always
+    image: chatgpt-fastapi:1.0
+    environment:
+      - DEV_MODE=true
+      - CELERY_BROKER_URL=amqp://daniyal:123@rabbitmq:5672/chat_app
+      - CELERY_RESULT_BACKEND=rpc://
+    env_file:
+      - ./config/celery/.env
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      chatgpt-service:
+        condition: service_healthy
+    command: celery -A celery_app.celery_app worker --loglevel=info --queues=chat_queue
+    networks:
+      chatgpt:
+        aliases:
+          - 'celery-worker'
+
+  auth-service:
+    restart: always
+    image: auth-fastapi:1.0
+    ports:
+      - "8000:8000"
+    environment:
+      - DEV_MODE=true
+    env_file:
+      - ./config/auth/.env
+    networks:
+      chatgpt:
+        aliases:
+          - 'auth-service'
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]  
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  chatgpt-service:
+    restart: always
+    image: chatgpt-fastapi:1.0
+    ports:
+      - "8001:8000"
+    environment:
+      - DEV_MODE=true
+    env_file:
+      - ./config/chatgpt/.env
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      auth-service:
+        condition: service_healthy
+    networks:
+      chatgpt:
+        aliases:
+          - 'chatgpt-service'
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+
+  postgres:
+    container_name: postgres
+    image: daniyal.local:5000/postgres:14.18
+    restart: always
+    environment:
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_DB: defaultdb
+    volumes:
+      - ./volumes/postgres-data:/var/lib/postgresql/data
+      - ./initdb/docker-entrypoint-initdb.d:/docker-entrypoint-initdb.d
+
+    ports:
+      - '15432:5432'
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 5s
+    networks:
+      chatgpt:
+        aliases:
+          - 'postgres'
+    logging:
+      driver: 'local'
+      options:
+        max-size: '10m'
+        max-file: '20'
+
+
+
+networks:
+  chatgpt:
+    driver: bridge
